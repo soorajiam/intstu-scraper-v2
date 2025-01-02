@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  worker_manager:
+    build:
+      context: .
+      dockerfile: Dockerfile.multi
+    environment:
+      - API_BASE_URL=${API_BASE_URL}
+      - API_TOKEN=${API_TOKEN}
+      - USER_ID=${USER_ID}
+      - SESSION_ID=firstrun
+      - WORKER_ID=worker_1
+      - MAX_WORKERS=5
+      - MAX_MEMORY=80
+      - MAX_TEMP=75
+    volumes:
+      - ./log:/app/log
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+    restart: unless-stopped 

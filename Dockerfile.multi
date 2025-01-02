@@ -1,0 +1,67 @@
+# Build stage
+FROM python:3.9-slim as builder
+
+# Install build dependencies
+RUN apt-get update && apt-get install -y \
+    gcc \
+    python3-dev
+
+# Create and activate virtual environment
+RUN python -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install Python dependencies
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Final stage
+FROM python:3.9-slim
+
+# Copy virtual environment from builder
+COPY --from=builder /opt/venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    gnupg \
+    libgconf-2-4 \
+    libatk1.0-0 \
+    libatk-bridge2.0-0 \
+    libcups2 \
+    libdrm2 \
+    libxkbcommon0 \
+    libxcomposite1 \
+    libxdamage1 \
+    libxfixes3 \
+    libxrandr2 \
+    libgbm1 \
+    libasound2 \
+    libpango-1.0-0 \
+    libpangocairo-1.0-0 \
+    libnspr4 \
+    libnss3 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create app directory
+WORKDIR /app
+
+# Install Playwright browsers
+RUN playwright install chromium
+
+# Copy application code
+COPY src/ ./src/
+
+# Set environment variables
+ENV PYTHONPATH=/app
+ENV PYTHONUNBUFFERED=1
+
+# Set default arguments
+ENV SESSION_ID="default_session"
+ENV WORKER_ID="default_worker"
+ENV MAX_WORKERS=5
+ENV MAX_MEMORY=80
+ENV MAX_TEMP=75
+
+# Modify the CMD to use environment variables and run as module
+CMD ["sh", "-c", "python -m src.scraper.main --session $SESSION_ID --worker-id $WORKER_ID --workers $MAX_WORKERS --max-memory $MAX_MEMORY --max-temp $MAX_TEMP"] 
