@@ -7,10 +7,13 @@ from urllib.parse import urlparse
 import socket
 import os
 from typing import Optional
+import urllib3
 
 from .constants import SKIP_EXTENSIONS, DOWNLOAD_PATTERNS
 
 logger = logging.getLogger(__name__)
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 async def is_valid_url(url: str) -> bool:
     """

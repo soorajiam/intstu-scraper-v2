@@ -1,35 +1,34 @@
-# Dockerized Web Scraper
+# Web Scraper with Tiered Architecture
 
-A robust, scalable web scraping system with multi-tiered scraping strategies and Docker support.
+A robust web scraping system that implements a tiered approach to content extraction, with automatic fallback mechanisms and intelligent content cleaning.
 
 ## Features
 
-- **Multi-tiered Scraping**: Uses multiple scraping strategies (requests, aiohttp, Playwright) for optimal content extraction
-- **Docker Support**: Fully containerized for consistent deployment
-- **Resource Management**: Monitors system resources (CPU, memory) to prevent overload
-- **Scalable**: Supports multiple worker processes
-- **Error Handling**: Comprehensive error handling and recovery mechanisms
-- **Logging**: Detailed logging with rotation support
-- **API Integration**: Built-in API client for data storage and retrieval
+- **Tiered Scraping Architecture**
+  - Request-based scraping (Tier 1)
+  - Async HTTP scraping (Tier 2)
+  - Full browser automation (Tier 3)
+  
+- **Intelligent Content Processing**
+  - Semantic structure preservation
+  - Navigation/clutter removal
+  - Markdown conversion
+  - Table and list retention
+  
+- **Link Discovery and Validation**
+  - Automatic link extraction
+  - URL validation and normalization
+  - Filter unwanted content types
+  - Duplicate detection
+  
+- **Anti-Detection Measures**
+  - Cloudflare bypass
+  - Rate limiting
+  - User-agent rotation
+  - Request retry handling
 
-## Architecture
+## Installation
 
-The system consists of several key components:
-
-1. **Worker Manager**: Orchestrates multiple scraper workers
-2. **Scraper Workers**: Individual scraping processes with three-tiered approach:
-   - Basic Request Scraper (for simple static pages)
-   - Aiohttp Scraper (for async HTTP requests)
-   - Playwright Scraper (for JavaScript-heavy pages)
-3. **Content Processing**: Cleans and converts HTML to markdown
-4. **API Client**: Handles communication with external API
-
-## Prerequisites
-
-- Docker and Docker Compose
-- Python 3.9+
-- API credentials (see Configuration section)
-
-## Quick Start
+### Using Docker (Recommended)
 
 1. Clone the repository: 

@@ -1,5 +1,6 @@
 """
 Playwright-based scraper implementation for JavaScript-heavy and dynamic websites.
+Final tier scraper with full browser capabilities.
 """
 
 import asyncio
@@ -9,11 +10,12 @@ from playwright.async_api import async_playwright, Browser, Page, Error as Playw
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from fake_useragent import UserAgent
 import gc
+from bs4 import BeautifulSoup
 
-from .base import BaseScraper, ScrapedContent
-from ..content.cleaner import clean_html_content
-from ..utils.url import is_valid_url, is_likely_download_url
-from ..utils.constants import (
+from src.scraper.base import BaseScraper, ScrapedContent
+from src.content.cleaner import clean_html_content
+from src.utils.url import is_valid_url, is_likely_download_url
+from src.utils.constants import (
     BROWSER_LAUNCH_ARGS,
     PAGE_LOAD_TIMEOUT,
     NETWORK_IDLE_TIMEOUT,
@@ -26,15 +28,19 @@ logger = logging.getLogger(__name__)
 class PlaywrightScraper(BaseScraper):
     """
     Advanced scraper using Playwright for JavaScript-heavy websites.
-    Handles dynamic content, SPAs, and complex web applications.
+    Final tier scraper - most capable but resource intensive.
     """
 
     def __init__(self):
         """Initialize the Playwright scraper."""
+        super().__init__()
+        self.resource_cost = 5.0  # Highest resource cost
         self.user_agent = UserAgent()
         self.playwright = None
         self.browser: Optional[Browser] = None
         self.page: Optional[Page] = None
+        self.max_retries = 2
+        self.retry_delay = 2
 
     async def _ensure_browser(self) -> None:
         """
@@ -71,31 +77,26 @@ class PlaywrightScraper(BaseScraper):
                 raise RuntimeError(f"Page creation failed: {e}")
 
     async def _configure_page(self) -> None:
-        """Configure page settings and timeouts."""
+        """Configure page settings and event handlers."""
         if not self.page:
             return
 
+        # Set timeouts
         self.page.set_default_timeout(PAGE_LOAD_TIMEOUT)
         self.page.set_default_navigation_timeout(PAGE_LOAD_TIMEOUT)
 
         # Set up error handling
         self.page.on("pageerror", lambda err: logger.error(f"Page error: {err}"))
         self.page.on("crash", lambda: logger.error("Page crashed"))
-
-        # Optional: Handle other events
         self.page.on("console", lambda msg: logger.debug(f"Console {msg.type}: {msg.text}"))
 
+        # Block unnecessary resources
+        await self.page.route("**/*.{png,jpg,jpeg,gif,svg,css,woff,woff2,ttf}", 
+            lambda route: route.abort())
+
     async def is_suitable(self, url: str) -> bool:
-        """
-        Check if this scraper is suitable for the given URL.
-        
-        Args:
-            url: URL to check
-            
-        Returns:
-            bool: True if URL is valid and might require JavaScript
-        """
-        # Playwright is our most capable scraper, so we accept most URLs
+        """Check if this scraper is suitable for the URL."""
+        # Playwright is our last resort, so accept most URLs
         if not await is_valid_url(url) or await is_likely_download_url(url):
             return False
         return True
@@ -141,56 +142,9 @@ class PlaywrightScraper(BaseScraper):
             logger.error(f"Error handling Cloudflare: {e}")
             return False
 
-    async def _extract_content(self) -> tuple[str, str]:
-        """
-        Extract content and title from the page.
-        
-        Returns:
-            tuple[str, str]: (content, title)
-        """
-        try:
-            # Wait for content to load
-            await self.page.wait_for_load_state("domcontentloaded", timeout=DOM_CONTENT_TIMEOUT)
-            try:
-                await self.page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT)
-            except PlaywrightTimeoutError:
-                logger.warning("Network idle timeout - continuing anyway")
-
-            # Get page title
-            title = await self.page.title()
-
-            # Try to get main content
-            content_selectors = [
-                'main', 'article', '#main-content', '.main-content',
-                '.content', '#content', '[role="main"]'
-            ]
-
-            html_content = ""
-            for selector in content_selectors:
-                try:
-                    element = await self.page.wait_for_selector(selector, timeout=SELECTOR_TIMEOUT)
-                    if element:
-                        html_content = await element.inner_html()
-                        if html_content.strip():
-                            break
-                except PlaywrightTimeoutError:
-                    continue
-
-            # If no content found with selectors, get full body
-            if not html_content.strip():
-                html_content = await self.page.content()
-
-            # Clean and process content
-            cleaned_content = await clean_html_content(html_content)
-            return cleaned_content, title
-
-        except Exception as e:
-            logger.error(f"Error extracting content: {e}")
-            raise
-
     async def scrape(self, url: str) -> ScrapedContent:
         """
-        Scrape content from the given URL using Playwright.
+        Scrape content using Playwright.
         
         Args:
             url: URL to scrape
@@ -198,68 +152,82 @@ class PlaywrightScraper(BaseScraper):
         Returns:
             ScrapedContent: Scraped content and metadata
         """
-        try:
-            await self._ensure_browser()
-            
-            # Navigate to page
+        retries = 0
+        last_error = None
+        
+        while retries <= self.max_retries:
             try:
+                await self._ensure_browser()
+                
+                # Navigate to page
                 await self.page.goto(url, wait_until="domcontentloaded", timeout=PAGE_LOAD_TIMEOUT)
-            except PlaywrightTimeoutError:
-                return ScrapedContent(
-                    url=url,
-                    content="",
-                    title="",
-                    status="error",
-                    error="Page load timeout"
-                )
+                
+                # Handle Cloudflare
+                if not await self._handle_cloudflare():
+                    return ScrapedContent(
+                        url=url,
+                        content="",
+                        title="",
+                        status="error",
+                        error="Failed to bypass protection"
+                    )
 
-            # Handle Cloudflare
-            if not await self._handle_cloudflare():
-                return ScrapedContent(
-                    url=url,
-                    content="",
-                    title="",
-                    status="error",
-                    error="Failed to bypass protection"
-                )
+                # Wait for content to load
+                try:
+                    await self.page.wait_for_load_state("domcontentloaded", timeout=DOM_CONTENT_TIMEOUT)
+                    await self.page.wait_for_load_state("networkidle", timeout=NETWORK_IDLE_TIMEOUT)
+                except PlaywrightTimeoutError:
+                    logger.warning("Timeout waiting for page load - continuing anyway")
 
-            # Extract content
-            content, title = await self._extract_content()
-            
-            if not content.strip():
+                # Get page content
+                html_content = await self.page.content()
+                
+                # Parse with BeautifulSoup for content extraction
+                soup = BeautifulSoup(html_content, 'html.parser')
+                
+                # Get title
+                title = await self.extract_title(soup)
+                
+                # Clean and extract content
+                content = await clean_html_content(str(soup))
+                
+                if not content.strip():
+                    return ScrapedContent(
+                        url=url,
+                        content="",
+                        title=title,
+                        status="error",
+                        error="No content after cleaning"
+                    )
+
                 return ScrapedContent(
                     url=url,
-                    content="",
+                    content=content,
                     title=title,
-                    status="error",
-                    error="No content extracted"
+                    status="success",
+                    html=html_content
                 )
 
-            return ScrapedContent(
-                url=url,
-                content=content,
-                title=title,
-                status="success"
-            )
+            except Exception as e:
+                last_error = e
+                if await self.should_retry(e):
+                    retries += 1
+                    if retries <= self.max_retries:
+                        await asyncio.sleep(self.retry_delay * retries)
+                        # Reset page on retry
+                        if self.page:
+                            await self.page.close()
+                            self.page = None
+                        continue
+                break
 
-        except PlaywrightError as e:
-            logger.error(f"Playwright error: {e}")
-            return ScrapedContent(
-                url=url,
-                content="",
-                title="",
-                status="error",
-                error=f"Playwright error: {str(e)}"
-            )
-        except Exception as e:
-            logger.error(f"Error scraping {url}: {e}")
-            return ScrapedContent(
-                url=url,
-                content="",
-                title="",
-                status="error",
-                error=str(e)
-            )
+        return ScrapedContent(
+            url=url,
+            content="",
+            title="",
+            status="error",
+            error=str(last_error)
+        )
 
     async def cleanup(self) -> None:
         """Clean up Playwright resources."""

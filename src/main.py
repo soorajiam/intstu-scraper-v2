@@ -6,8 +6,9 @@ Handles initialization and startup of the worker manager system.
 import asyncio
 import argparse
 import logging
-from worker_manager.manager import WorkerManager
-from utils.logging import setup_logging
+from src.worker_manager.manager import WorkerManager
+from src.utils.logging import setup_logging
+from src.utils.health import start_health_server
 import os
 
 logger = logging.getLogger(__name__)
@@ -36,6 +37,7 @@ def parse_arguments():
     parser.add_argument(
         '--session', 
         type=str,
+        required=True,
         help='API session ID for all workers'
     )
     parser.add_argument(
@@ -59,23 +61,18 @@ async def main():
     args = parse_arguments()
     setup_logging()
     
-    # If session not provided via CLI, prompt for it
-    session = args.session
-    if not session:
-        session = input("Please enter the API session ID: ").strip()
-        if not session:
-            logger.error("API session ID is required")
-            return
+    # Start health check server
+    await start_health_server()
     
     logger.info(f"Starting manager with {args.workers} workers")
-    logger.info(f"API Session: {session}")
+    logger.info(f"API Session: {args.session}")
     logger.info(f"Memory limit: {args.max_memory}%, Temperature limit: {args.max_temp}°C")
     
     manager = WorkerManager(
         num_workers=args.workers,
         max_memory_percent=args.max_memory,
         max_temp=args.max_temp,
-        api_session=session,
+        api_session=args.session,
         institution_id=args.institution_id
     )
     

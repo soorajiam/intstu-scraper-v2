@@ -5,9 +5,9 @@ Coordinates different scraper implementations and handles the scraping workflow.
 
 import asyncio
 import logging
-import argparse
 from typing import List, Optional
 import gc
+from urllib.parse import urlparse
 
 from src.scraper.base import BaseScraper, ScrapedContent
 from src.scraper.request_scraper import RequestScraper
@@ -15,8 +15,8 @@ from src.scraper.aiohttp_scraper import AiohttpScraper
 from src.scraper.playwright_scraper import PlaywrightScraper
 from src.api.client import api_client
 from src.api.models import ScrapedLink
-from src.utils.logging import setup_logging, get_logger
-from src.utils.url import is_valid_url
+from src.utils.link_handler import LinkHandler
+from src.utils.logging import get_logger
 
 logger = get_logger(__name__)
 
@@ -27,121 +27,95 @@ class ScraperOrchestrator:
     """
 
     def __init__(self, session: str, worker_id: str, institution_id: Optional[str] = None):
-        """
-        Initialize the scraper orchestrator.
-        
-        Args:
-            session: Scraping session ID
-            worker_id: Unique worker identifier
-            institution_id: Optional institution ID filter
-        """
+        """Initialize the scraper orchestrator."""
         self.session = session
         self.worker_id = worker_id
         self.institution_id = institution_id
         
-        # Initialize scrapers in order of complexity
+        # Initialize scrapers in order of complexity/resource usage
         self.scrapers: List[BaseScraper] = [
-            RequestScraper(),
-            AiohttpScraper(),
-            PlaywrightScraper()
+            RequestScraper(),    # Simplest, fastest
+            AiohttpScraper(),    # More capable
+            PlaywrightScraper()  # Most powerful, resource-heavy
         ]
         
         self.stopped = False
-
-    async def _try_scraper(self, scraper: BaseScraper, url: str) -> Optional[ScrapedContent]:
-        """
-        Try scraping with a specific scraper implementation.
+        self.link_handler = None
         
-        Args:
-            scraper: Scraper to use
-            url: URL to scrape
-            
-        Returns:
-            Optional[ScrapedContent]: Scraped content if successful
-        """
-        try:
-            if not await scraper.is_suitable(url):
-                return None
-                
-            logger.info(f"Trying {scraper.__class__.__name__} for {url}")
-            return await scraper.scrape(url)
-            
-        except Exception as e:
-            logger.error(f"Error with {scraper.__class__.__name__}: {e}")
-            return None
-
-    async def _save_result(self, content: ScrapedContent) -> None:
-        """
-        Save scraped content to the API.
-        
-        Args:
-            content: Scraped content to save
-        """
-        try:
-            link = ScrapedLink(
-                link=content.url,
-                session=self.session,
-                status=content.status,
-                error=content.error,
-                content=content.content,
-                title=content.title
-            )
-            
-            await api_client.save_scraped_link(link)
-            
-        except Exception as e:
-            logger.error(f"Error saving result: {e}")
+        # Set session ID in API client
+        api_client.session_id = session
 
     async def process_url(self, url: str) -> bool:
-        """
-        Process a single URL using available scrapers.
+        """Process a single URL through the tiered scraping system."""
+        # Initialize link handler for this URL
+        self.link_handler = LinkHandler(url)
         
-        Args:
-            url: URL to process
-            
-        Returns:
-            bool: True if processing was successful
-        """
-        if not await is_valid_url(url):
-            logger.warning(f"Invalid URL: {url}")
-            await self._save_result(ScrapedContent(
-                url=url,
-                content="",
-                title="",
-                status="error",
-                error="Invalid URL"
-            ))
-            return True
-
-        # Try each scraper in order until one succeeds
         for scraper in self.scrapers:
             try:
-                if result := await self._try_scraper(scraper, url):
-                    await self._save_result(result)
+                logger.info(f"Trying {scraper.__class__.__name__} for {url}")
+                
+                if not await scraper.is_suitable(url):
+                    logger.debug(f"{scraper.__class__.__name__} not suitable for {url}")
+                    continue
                     
-                    # If content was successfully extracted, we're done
-                    if result.status == "success" and result.content.strip():
-                        return True
+                result = await scraper.scrape(url)
+                
+                # Always try to extract links if we have HTML, regardless of content extraction success
+                if result.html:
+                    try:
+                        # Extract all links from the raw HTML
+                        new_links = await self.link_handler.process_links(result.html)
                         
+                        if new_links:
+                            # Save links to API
+                            if await api_client.save_new_links(new_links):
+                                logger.info(f"Successfully saved {len(new_links)} new links")
+                            else:
+                                logger.error("Failed to save new links")
+                        else:
+                            logger.debug("No new links found")
+                            
+                    except Exception as e:
+                        logger.error(f"Error processing links: {e}", exc_info=True)
+                
+                # If content extraction was successful, save the content
+                if result.status == "success" and result.content:
+                    logger.info(f"Successfully scraped {url} with {scraper.__class__.__name__}")
+                    await self._save_result(result)
+                    return True
+                else:
+                    logger.warning(f"{scraper.__class__.__name__} failed: {result.error}")
+                    
             except Exception as e:
-                logger.error(f"Error with scraper {scraper.__class__.__name__}: {e}")
-                continue
+                logger.error(f"Error in {scraper.__class__.__name__} for {url}: {str(e)}", 
+                            exc_info=True)
+            continue
+        
+        return False
 
-        # If all scrapers failed, save error
-        await self._save_result(ScrapedContent(
-            url=url,
-            content="",
-            title="",
-            status="error",
-            error="All scrapers failed"
-        ))
-        return True
+    async def _save_result(self, result: ScrapedContent) -> None:
+        """Save scraping result to API."""
+        try:
+            link = ScrapedLink(
+                link=result.url,
+                session=self.session,
+                status=result.status,
+                error=result.error,
+                content=result.content,
+                title=result.title
+            )
+            await api_client.save_scraped_link(link)
+        except Exception as e:
+            logger.error(f"Error saving result: {e}")
 
     async def run(self) -> None:
         """Main scraping loop."""
         logger.info(f"Starting scraper worker {self.worker_id}")
         
         try:
+            # Ensure API client is initialized with session
+            await api_client.start_session(self.session)
+            
             while not self.stopped:
                 # Get next URL from API
                 next_url = await api_client.get_next_url(

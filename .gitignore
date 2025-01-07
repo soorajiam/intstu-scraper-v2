@@ -37,16 +37,14 @@ log/
 
 # Environment variables
 .env
-.env.*
+.env.local
 
 # Docker
 .docker/
-docker-compose.override.yml
+
+# Browser data
+.playwright-browser-data/
 
 # System
 .DS_Store
 Thumbs.db
-
-# Project specific
-*.db
-*.sqlite3

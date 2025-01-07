@@ -1,25 +1,42 @@
 version: '3.8'
 
 services:
-  worker_manager:
+  scraper:
     build:
       context: .
-      dockerfile: Dockerfile.multi
+      dockerfile: Dockerfile
     environment:
       - API_BASE_URL=${API_BASE_URL}
       - API_TOKEN=${API_TOKEN}
       - USER_ID=${USER_ID}
-      - SESSION_ID=firstrun
-      - WORKER_ID=worker_1
-      - MAX_WORKERS=5
-      - MAX_MEMORY=80
-      - MAX_TEMP=75
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MAX_WORKERS=${MAX_WORKERS:-3}
+      - MAX_MEMORY_PERCENT=${MAX_MEMORY_PERCENT:-80}
+      - MAX_CPU_TEMP=${MAX_CPU_TEMP:-75}
     volumes:
-      - ./log:/app/log
+      - ./log:/home/scraper/app/log
+      - ./src:/home/scraper/app/src
     deploy:
       resources:
         limits:
+          cpus: '1.5'
           memory: 2G
         reservations:
-          memory: 1G
-    restart: unless-stopped 
+          cpus: '0.5'
+          memory: 512M
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    shm_size: '1gb'
+    tmpfs:
+      - /tmp
+    restart: "no"
+    init: true
+    command: ["--session", "${SCRAPE_SESSION}", "--workers", "${MAX_WORKERS:-3}"]
